@@ -1,6 +1,6 @@
 # Compiler files
 cache/
-out/
+foundry-out/
 
 # Ignores development broadcast logs
 !/broadcast
