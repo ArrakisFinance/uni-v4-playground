@@ -30,7 +30,6 @@ contract ArrakisHookV1 is IArrakisHookV1, BaseHook, ERC20, ReentrancyGuard {
 
     uint8 public immutable c;
     uint8 public immutable referenceFee;
-    uint256 public immutable rebalanceFrequence;
 
     //#endregion constants.
 
@@ -52,6 +51,8 @@ contract ArrakisHookV1 is IArrakisHookV1, BaseHook, ERC20, ReentrancyGuard {
     bool public impactDirection;
 
     bool public zeroForOne; // transient.
+    uint256 public a0;
+    uint256 public a1;
 
     //#endregion properties.
 
@@ -59,7 +60,6 @@ contract ArrakisHookV1 is IArrakisHookV1, BaseHook, ERC20, ReentrancyGuard {
         PoolManager poolManager;
         string name;
         string symbol;
-        uint256 rebalanceFrequence_;
         uint24 rangeSize;
         int24 lowerTick;
         int24 upperTick;
@@ -71,14 +71,11 @@ contract ArrakisHookV1 is IArrakisHookV1, BaseHook, ERC20, ReentrancyGuard {
     }
 
     struct PoolManagerCallData {
-        uint8 actionType; // 0 for mint, 1 for burn, 2 for rebalance.
-        bytes1 sendOrTake0;
-        uint256 amount0;
-        bytes1 sendOrTake1;
-        uint256 amount1;
+        uint8 actionType; // 0 for mint, 1 for burn.
+        uint256 mintAmount;
         uint256 burnAmount;
         address receiver;
-        bytes payload;
+        address msgSender;
     }
 
     constructor(
@@ -155,105 +152,26 @@ contract ArrakisHookV1 is IArrakisHookV1, BaseHook, ERC20, ReentrancyGuard {
         address receiver_
     ) external nonReentrant returns (uint256 amount0, uint256 amount1) {
         require(burnAmount_ > 0, "burn 0");
-
-        uint256 totalSupply = totalSupply();
-
-        (uint160 sqrtPriceX96, , , , , ) = poolManager.getSlot0(
-            PoolIdLibrary.toId(poolKey)
-        );
-
-        Position.Info memory positionInfo = PoolManager(
-            payable(address(poolManager))
-        ).getPosition(
-                PoolIdLibrary.toId(poolKey),
-                address(this),
-                lowerTick,
-                upperTick
-            );
-
-        _burn(msg.sender, burnAmount_);
-
-        uint256 liquidityBurned_ = FullMath.mulDiv(
-            burnAmount_,
-            positionInfo.liquidity,
-            totalSupply
-        );
-        uint256 liquidityBurned = SafeCast.toUint128(liquidityBurned_);
-
-        PoolManager.ModifyPositionParams memory modPosParams = IPoolManager
-            .ModifyPositionParams({
-                tickLower: lowerTick,
-                tickUpper: upperTick,
-                liquidityDelta: -SafeCast.toInt128(
-                    SafeCast.toInt256(liquidityBurned)
-                )
-            });
-
-        bytes memory poolManagerData = abi.encodeWithSelector(
-            PoolManager.modifyPosition.selector,
-            poolKey,
-            modPosParams
-        );
-
-        Pool.State memory state;
-        (
-            state.slot0,
-            state.feeGrowthGlobal0X128,
-            state.feeGrowthGlobal1X128,
-            state.liquidity
-        ) = poolManager.pools(PoolIdLibrary.toId(poolKey));
-
-        state.ticks = poolManager.pools(PoolIdLibrary.toId(poolKey)).ticks;
-
-        (uint256 feeGrowthInside0X128, uint256 feeGrowthInside1X128) = Pool
-            .getFeeGrowthInside(state, lowerTick, upperTick);
-
-        (amount0, amount1) = LiquidityAmounts.getAmountsForLiquidity(
-            sqrtPriceX96,
-            TickMath.getSqrtRatioAtTick(lowerTick),
-            TickMath.getSqrtRatioAtTick(upperTick),
-            SafeCast.toUint128(liquidityBurned)
-        );
-
-        // compute current fees earned
-        uint256 fee0 = _computeFeesEarned(
-            positionInfo.feeGrowthInside0LastX128,
-            feeGrowthInside0X128,
-            positionInfo.liquidity
-        );
-        uint256 fee1 = _computeFeesEarned(
-            positionInfo.feeGrowthInside1LastX128,
-            feeGrowthInside1X128,
-            positionInfo.liquidity
-        );
-
-        uint256 leftOver0 = poolManager.balanceOf(
-            address(this),
-            poolKey.currency0.toId()
-        );
-
-        uint256 leftOver1 = poolManager.balanceOf(
-            address(this),
-            poolKey.currency1.toId()
-        );
-
-        amount0 += FullMath.mulDiv(burnAmount_, fee0 + leftOver0, totalSupply);
-        amount1 += FullMath.mulDiv(burnAmount_, fee1 + leftOver1, totalSupply);
+        require(totalSupply() > 0, "total supply is 0");
 
         bytes memory data = abi.encode(
             PoolManagerCallData({
                 actionType: 1,
-                sendOrTake0: 1,
-                amount0: fee0,
-                sendOrTake1: 1,
+                mintAmount: 0,
                 burnAmount: burnAmount_,
                 receiver: receiver_,
-                amount1: fee1,
-                data: poolManagerData
+                msgSender: msg.sender
             })
         );
 
+        a0 = a1 = 0;
+
         poolManager.lock(data);
+
+        amount0 = a0;
+        amount1 = a1;
+
+        _burn(msg.sender, burnAmount_);
     }
 
     function mint(
@@ -262,73 +180,22 @@ contract ArrakisHookV1 is IArrakisHookV1, BaseHook, ERC20, ReentrancyGuard {
     ) external nonReentrant returns (uint256 amount0, uint256 amount1) {
         require(mintAmount_ > 0, "mint 0");
 
-        uint256 totalSupply = totalSupply();
-
-        (uint160 sqrtPriceX96, , , , , ) = poolManager.getSlot0(
-            PoolIdLibrary.toId(poolKey)
-        );
-
-        if (totalSupply > 0) {
-            (
-                uint256 amount0Current,
-                uint256 amount1Current
-            ) = _getUnderlyingBalances();
-
-            amount0 = FullMath.mulDivRoundingUp(
-                amount0Current,
-                mintAmount_,
-                totalSupply
-            );
-            amount1 = FullMath.mulDivRoundingUp(
-                amount1Current,
-                mintAmount_,
-                totalSupply
-            );
-        } else {
-            // if supply is 0 mintAmount == liquidity to deposit
-            (amount0, amount1) = LiquidityAmounts.getAmountsForLiquidity(
-                sqrtPriceX96,
-                lowerTick.getSqrtRatioAtTick(),
-                upperTick.getSqrtRatioAtTick(),
-                SafeCast.toUint128(mintAmount_)
-            );
-        }
-
-        // deposit as much new liquidity as possible
-        uint128 liquidityMinted = LiquidityAmounts.getLiquidityForAmounts(
-            sqrtPriceX96,
-            lowerTick.getSqrtRatioAtTick(),
-            upperTick.getSqrtRatioAtTick(),
-            amount0,
-            amount1
-        );
-
-        PoolManager.ModifyPositionParams memory modPosParams = PoolManager
-            .ModifyPositionParams({
-                tickLower: lowerTick,
-                tickUpper: upperTick,
-                liquidityDelta: liquidityMinted
-            });
-
-        bytes memory poolManagerData = abi.encodeWithSelector(
-            PoolManager.modifyPosition.selector,
-            poolKey,
-            modPosParams
-        );
-
         bytes memory data = abi.encode(
             PoolManagerCallData({
                 actionType: 0,
-                sendOrTake0: 0,
-                amount0: amount0,
-                sendOrTake1: 0,
+                mintAmount: mintAmount_,
                 burnAmount: 0,
-                receiver: address(0),
-                amount1: amount1,
-                data: poolManagerData
+                receiver: receiver_,
+                msgSender: msg.sender
             })
         );
+
+        a0 = a1 = 0;
+
         poolManager.lock(data);
+
+        amount0 = a0;
+        amount1 = a1;
 
         _mint(receiver_, mintAmount_);
     }
@@ -346,147 +213,419 @@ contract ArrakisHookV1 is IArrakisHookV1, BaseHook, ERC20, ReentrancyGuard {
             (PoolManagerCallData)
         );
         // first case mint
-        if (pMCallData.action == 0) {
-            (bool success, ) = address(poolManager).call(pMCallData.payload);
+        if (pMCallData.actionType == 0) _lockAcquiredMint(pMCallData);
+        // second case burn action.
+        if (pMCallData.actionType == 1) _lockAcquiredBurn(pMCallData);
+    }
 
-            require(success, "mint failed");
+    function _lockAcquiredMint(PoolManagerCallData memory pMCallData) internal {
+        // burn everything positions and erc1155
 
-            // send the tokens to poolManager and settle.
-            if (pMCallData.sendOrTake0 == 0 && pMCallData.amount0 > 0) {
-                ERC20(address(poolKey.currency0)).safeTransferFrom(
-                    msg.sender,
+        uint256 totalSupply = totalSupply();
+
+        if (totalSupply == 0) {
+            poolManager.modifyPosition(
+                poolKey,
+                IPoolManager.ModifyPositionParams({
+                    liquidityDelta: SafeCast.toInt256(pMCallData.mintAmount),
+                    tickLower: lowerTick,
+                    tickUpper: upperTick
+                })
+            );
+
+            uint256 index = poolManager.lockedByLength() - 1;
+            int256 currency0BalanceRaw = poolManager.getCurrencyDelta(
+                index,
+                poolKey.currency0
+            );
+            if (currency0BalanceRaw > 0) {
+                revert("cannot delta currency0 positive");
+            }
+            uint256 currency0Balance = SafeCast.toUint256(currency0BalanceRaw);
+            int256 currency1BalanceRaw = poolManager.getCurrencyDelta(
+                index,
+                poolKey.currency1
+            );
+            if (currency1BalanceRaw > 0) {
+                revert("cannot delta currency1 positive");
+            }
+            uint256 currency1Balance = SafeCast.toUint256(currency1BalanceRaw);
+
+            if (currency0Balance > 0) {
+                ERC20(Currency.unwrap(poolKey.currency0)).safeTransferFrom(
+                    pMCallData.msgSender,
                     address(poolManager),
-                    pMCallData.amount0
+                    currency0Balance
                 );
                 poolManager.settle(poolKey.currency0);
             }
-            if (pMCallData.sendOrTake1 == 0 && pMCallData.amount1 > 0) {
-                ERC20(address(poolKey.currency1)).safeTransferFrom(
-                    msg.sender,
+            if (currency1Balance > 0) {
+                ERC20(Currency.unwrap(poolKey.currency1)).safeTransferFrom(
+                    pMCallData.msgSender,
                     address(poolManager),
-                    pMCallData.amount1
+                    currency1Balance
                 );
                 poolManager.settle(poolKey.currency1);
             }
-        }
-        // second case burn action.
-        if (pMCallData.action == 1) {
-            (bool success, bytes memory returnData) = address(poolManager).call(
-                pMCallData.payload
+            a0 = currency0Balance;
+            a1 = currency1Balance;
+        } else {
+            Position.Info memory info = PoolManager(
+                payable(address(poolManager))
+            ).getPosition(
+                    PoolIdLibrary.toId(poolKey),
+                    address(this),
+                    lowerTick,
+                    upperTick
+                );
+
+            if (info.liquidity > 0)
+                poolManager.modifyPosition(
+                    poolKey,
+                    IPoolManager.ModifyPositionParams({
+                        liquidityDelta: -SafeCast.toInt256(
+                            uint256(info.liquidity)
+                        ),
+                        tickLower: lowerTick,
+                        tickUpper: upperTick
+                    })
+                );
+
+            uint256 currency0Id = CurrencyLibrary.toId(poolKey.currency0);
+            uint256 leftOver0 = poolManager.balanceOf(
+                address(this),
+                currency0Id
             );
 
-            require(success, "burn failed");
-
-            BalanceDelta balanceDelta = abi.decode(returnData, (BalanceDelta));
-
-            uint256 totalSupply = totalSupply();
-
-            // take and settle
-            if (pMCallData.sendOrTake0 == 1 && pMCallData.amount0 > 0) {
-                uint256 leftOver0 = poolManager.balanceOf(
-                    address(this),
-                    poolKey.currency0.toId()
-                );
-
-                poolManager.onReceivedERC1155(
+            if (leftOver0 > 0)
+                PoolManager(payable(address(poolManager))).onERC1155Received(
                     address(0),
                     address(0),
-                    poolKey.currency0.toId(),
-                    FullMath.mulDiv(
-                        pMCallData.burnAmount,
-                        leftOver0,
-                        totalSupply
-                    ),
+                    currency0Id,
+                    leftOver0,
                     ""
                 );
-                poolManager.take(
-                    poolKey.currency0,
-                    pMCallData.receiver,
-                    FullMath.mulDiv(
-                        pMCallData.burnAmount,
-                        leftOver0 + pMCallData.amount0,
-                        totalSupply
-                    ) + (balanceDelta.amount0() - pMCallData.amount0)
+
+            uint256 currency1Id = CurrencyLibrary.toId(poolKey.currency1);
+            uint256 leftOver1 = poolManager.balanceOf(
+                address(this),
+                currency1Id
+            );
+            if (leftOver1 > 0)
+                PoolManager(payable(address(poolManager))).onERC1155Received(
+                    address(0),
+                    address(0),
+                    currency1Id,
+                    leftOver1,
+                    ""
                 );
+
+            // check locker balances.
+
+            uint256 index = poolManager.lockedByLength() - 1;
+            int256 currency0BalanceRaw = poolManager.getCurrencyDelta(
+                index,
+                poolKey.currency0
+            );
+            if (currency0BalanceRaw < 0) {
+                revert("cannot delta currency0 negative");
             }
-            if (pMCallData.sendOrTake1 == 1 && pMCallData.amount1 > 0) {
-                uint256 leftOver1 = poolManager.balanceOf(
-                    address(this),
-                    poolKey.currency1.toId()
+            uint256 currency0Balance = SafeCast.toUint256(currency0BalanceRaw);
+            int256 currency1BalanceRaw = poolManager.getCurrencyDelta(
+                index,
+                poolKey.currency1
+            );
+            if (currency1BalanceRaw < 0) {
+                revert("cannot delta currency1 negative");
+            }
+            uint256 currency1Balance = SafeCast.toUint256(currency1BalanceRaw);
+
+            uint256 amount0 = FullMath.mulDiv(
+                pMCallData.mintAmount,
+                currency0Balance,
+                totalSupply
+            );
+            uint256 amount1 = FullMath.mulDiv(
+                pMCallData.mintAmount,
+                currency1Balance,
+                totalSupply
+            );
+
+            // safeTransfer to PoolManager.
+            if (amount0 > 0) {
+                ERC20(Currency.unwrap(poolKey.currency0)).safeTransferFrom(
+                    pMCallData.msgSender,
+                    address(poolManager),
+                    amount0
+                );
+                poolManager.settle(poolKey.currency0);
+            }
+            if (amount1 > 0) {
+                ERC20(Currency.unwrap(poolKey.currency1)).safeTransferFrom(
+                    pMCallData.msgSender,
+                    address(poolManager),
+                    amount1
+                );
+                poolManager.settle(poolKey.currency1);
+            }
+
+            a0 = amount0;
+            a1 = amount1;
+
+            // updated total balances.
+            currency0BalanceRaw = poolManager.getCurrencyDelta(
+                index,
+                poolKey.currency0
+            );
+            if (currency0BalanceRaw < 0) {
+                revert("cannot delta currency0 negative");
+            }
+            currency0Balance = SafeCast.toUint256(currency0BalanceRaw);
+            currency1BalanceRaw = poolManager.getCurrencyDelta(
+                index,
+                poolKey.currency1
+            );
+            if (currency1BalanceRaw < 0) {
+                revert("cannot delta currency1 negative");
+            }
+            currency1Balance = SafeCast.toUint256(currency1BalanceRaw);
+
+            // mint back the position.
+
+            (uint160 sqrtPriceX96, , , , , ) = poolManager.getSlot0(
+                PoolIdLibrary.toId(poolKey)
+            );
+
+            uint128 liquidity = LiquidityAmounts.getLiquidityForAmounts(
+                sqrtPriceX96,
+                TickMath.getSqrtRatioAtTick(lowerTick),
+                TickMath.getSqrtRatioAtTick(upperTick),
+                currency0Balance,
+                currency1Balance
+            );
+
+            if (liquidity > 0)
+                poolManager.modifyPosition(
+                    poolKey,
+                    IPoolManager.ModifyPositionParams({
+                        liquidityDelta: SafeCast.toInt256(uint256(liquidity)),
+                        tickLower: lowerTick,
+                        tickUpper: upperTick
+                    })
                 );
 
-                poolManager.onReceivedERC1155(
-                    address(0),
-                    address(0),
-                    poolKey.currency1.toId(),
-                    FullMath.mulDiv(
-                        pMCallData.burnAmount,
-                        leftOver1,
-                        totalSupply
-                    ),
-                    ""
-                );
-                poolManager.take(
-                    poolKey.currency1,
-                    pMCallData.receiver,
-                    FullMath.mulDiv(
-                        pMCallData.burnAmount,
-                        leftOver1 + pMCallData.amount1,
-                        totalSupply
-                    ) + (balanceDelta.amount1() - pMCallData.amount1)
-                );
+            leftOver0 = poolManager.balanceOf(address(this), currency0Id);
+
+            leftOver1 = poolManager.balanceOf(address(this), currency1Id);
+
+            if (leftOver0 > 0) {
+                poolManager.mint(poolKey.currency0, address(this), leftOver0);
+            }
+
+            if (leftOver1 > 0) {
+                poolManager.mint(poolKey.currency1, address(this), leftOver1);
             }
         }
     }
 
-    function getFee(PoolManager.PoolKey calldata) external returns (uint24) {
+    function _lockAcquiredBurn(PoolManagerCallData memory pMCallData) internal {
+        {
+            // burn everything positions and erc1155
+
+            uint256 totalSupply = totalSupply();
+
+            Position.Info memory info = PoolManager(
+                payable(address(poolManager))
+            ).getPosition(
+                    PoolIdLibrary.toId(poolKey),
+                    address(this),
+                    lowerTick,
+                    upperTick
+                );
+
+            if (info.liquidity > 0)
+                poolManager.modifyPosition(
+                    poolKey,
+                    IPoolManager.ModifyPositionParams({
+                        liquidityDelta: -SafeCast.toInt256(
+                            uint256(info.liquidity)
+                        ),
+                        tickLower: lowerTick,
+                        tickUpper: upperTick
+                    })
+                );
+
+            {
+                uint256 currency0Id = CurrencyLibrary.toId(poolKey.currency0);
+                uint256 leftOver0 = poolManager.balanceOf(
+                    address(this),
+                    currency0Id
+                );
+
+                if (leftOver0 > 0)
+                    PoolManager(payable(address(poolManager)))
+                        .onERC1155Received(
+                            address(0),
+                            address(0),
+                            currency0Id,
+                            leftOver0,
+                            ""
+                        );
+
+                uint256 currency1Id = CurrencyLibrary.toId(poolKey.currency1);
+                uint256 leftOver1 = poolManager.balanceOf(
+                    address(this),
+                    currency1Id
+                );
+                if (leftOver1 > 0)
+                    PoolManager(payable(address(poolManager)))
+                        .onERC1155Received(
+                            address(0),
+                            address(0),
+                            currency1Id,
+                            leftOver1,
+                            ""
+                        );
+            }
+
+            // check locker balances.
+
+            uint256 index = poolManager.lockedByLength() - 1;
+            int256 currency0BalanceRaw = poolManager.getCurrencyDelta(
+                index,
+                poolKey.currency0
+            );
+            if (currency0BalanceRaw < 0) {
+                revert("cannot delta currency0 negative");
+            }
+            uint256 currency0Balance = SafeCast.toUint256(currency0BalanceRaw);
+            int256 currency1BalanceRaw = poolManager.getCurrencyDelta(
+                index,
+                poolKey.currency1
+            );
+            if (currency1BalanceRaw < 0) {
+                revert("cannot delta currency1 negative");
+            }
+            uint256 currency1Balance = SafeCast.toUint256(currency1BalanceRaw);
+
+            {
+                uint256 amount0 = FullMath.mulDiv(
+                    pMCallData.burnAmount,
+                    currency0Balance,
+                    totalSupply
+                );
+                uint256 amount1 = FullMath.mulDiv(
+                    pMCallData.burnAmount,
+                    currency1Balance,
+                    totalSupply
+                );
+
+                // take amounts and send them to receiver
+                if (amount0 > 0) {
+                    poolManager.take(
+                        poolKey.currency0,
+                        pMCallData.receiver,
+                        amount0
+                    );
+                }
+                if (amount1 > 0) {
+                    poolManager.take(
+                        poolKey.currency1,
+                        pMCallData.receiver,
+                        amount1
+                    );
+                }
+
+                a0 = amount0;
+                a1 = amount1;
+            }
+
+            // mint back the position.
+
+            // updated total balances.
+            currency0BalanceRaw = poolManager.getCurrencyDelta(
+                index,
+                poolKey.currency0
+            );
+            if (currency0BalanceRaw < 0) {
+                revert("cannot delta currency0 negative");
+            }
+            currency0Balance = SafeCast.toUint256(currency0BalanceRaw);
+            currency1BalanceRaw = poolManager.getCurrencyDelta(
+                index,
+                poolKey.currency1
+            );
+            if (currency1BalanceRaw < 0) {
+                revert("cannot delta currency1 negative");
+            }
+            currency1Balance = SafeCast.toUint256(currency1BalanceRaw);
+
+            {
+                (uint160 sqrtPriceX96, , , , , ) = poolManager.getSlot0(
+                    PoolIdLibrary.toId(poolKey)
+                );
+
+                uint128 liquidity = LiquidityAmounts.getLiquidityForAmounts(
+                    sqrtPriceX96,
+                    TickMath.getSqrtRatioAtTick(lowerTick),
+                    TickMath.getSqrtRatioAtTick(upperTick),
+                    currency0Balance,
+                    currency1Balance
+                );
+
+                if (liquidity > 0)
+                    poolManager.modifyPosition(
+                        poolKey,
+                        IPoolManager.ModifyPositionParams({
+                            liquidityDelta: SafeCast.toInt256(
+                                uint256(liquidity)
+                            ),
+                            tickLower: lowerTick,
+                            tickUpper: upperTick
+                        })
+                    );
+            }
+
+            {
+                uint256 currency0Id = CurrencyLibrary.toId(poolKey.currency0);
+                uint256 currency1Id = CurrencyLibrary.toId(poolKey.currency1);
+
+                uint256 leftOver0 = poolManager.balanceOf(
+                    address(this),
+                    currency0Id
+                );
+
+                uint256 leftOver1 = poolManager.balanceOf(
+                    address(this),
+                    currency1Id
+                );
+
+                if (leftOver0 > 0) {
+                    poolManager.mint(
+                        poolKey.currency0,
+                        address(this),
+                        leftOver0
+                    );
+                }
+
+                if (leftOver1 > 0) {
+                    poolManager.mint(
+                        poolKey.currency1,
+                        address(this),
+                        leftOver1
+                    );
+                }
+            }
+        }
+    }
+
+    function getFee(PoolManager.PoolKey calldata) external view returns (uint24) {
         return
             impactDirection != zeroForOne
                 ? referenceFee + delta
                 : referenceFee > delta
                 ? referenceFee - delta
                 : 0;
-    }
-
-    function getFeeGrowthInside(
-        Pool.State memory self,
-        int24 tickLower,
-        int24 tickUpper
-    )
-        external
-        view
-        returns (uint256 feeGrowthInside0X128, uint256 feeGrowthInside1X128)
-    {
-        Pool.TickInfo memory lower = self.ticks[tickLower];
-        Pool.TickInfo memory upper = self.ticks[tickUpper];
-        int24 tickCurrent = self.slot0.tick;
-
-        unchecked {
-            if (tickCurrent < tickLower) {
-                feeGrowthInside0X128 =
-                    lower.feeGrowthOutside0X128 -
-                    upper.feeGrowthOutside0X128;
-                feeGrowthInside1X128 =
-                    lower.feeGrowthOutside1X128 -
-                    upper.feeGrowthOutside1X128;
-            } else if (tickCurrent >= tickUpper) {
-                feeGrowthInside0X128 =
-                    upper.feeGrowthOutside0X128 -
-                    lower.feeGrowthOutside0X128;
-                feeGrowthInside1X128 =
-                    upper.feeGrowthOutside1X128 -
-                    lower.feeGrowthOutside1X128;
-            } else {
-                feeGrowthInside0X128 =
-                    self.feeGrowthGlobal0X128 -
-                    lower.feeGrowthOutside0X128 -
-                    upper.feeGrowthOutside0X128;
-                feeGrowthInside1X128 =
-                    self.feeGrowthGlobal1X128 -
-                    lower.feeGrowthOutside1X128 -
-                    upper.feeGrowthOutside1X128;
-            }
-        }
     }
 
     // #endegion hook functions
@@ -507,96 +646,9 @@ contract ArrakisHookV1 is IArrakisHookV1, BaseHook, ERC20, ReentrancyGuard {
             });
     }
 
-    function getUnderlyingBalances()
-        public
-        view
-        returns (uint256 amount0Current, uint256 amount1Current)
-    {}
-
-    function _computeFeesEarned(
-        uint256 feeGrowthInsideLast_,
-        uint256 feeGrowthInside_,
-        uint128 liquidity_
-    ) private pure returns (uint256 fee) {
-        unchecked {
-            fee = FullMath.mulDiv(
-                liquidity_,
-                feeGrowthInside_ - feeGrowthInsideLast_,
-                0x100000000000000000000000000000000
-            );
-        }
-    }
-
     //#endregion view/pure functions.
 
     //#region internal functions.
-
-    function _getUnderlyingBalances()
-        internal
-        view
-        returns (uint256 amount0Current, uint256 amount1Current)
-    {
-        (
-            uint128 liquidity,
-            uint256 feeGrowthInside0LastX128,
-            uint256 feeGrowthInside1LastX128
-        ) = poolManager.getPosition(
-                PoolIdLibrary.toId(poolKey),
-                address(this),
-                lowerTick,
-                upperTick
-            );
-
-        Pool.State memory state;
-        (
-            state.slot0,
-            state.feeGrowthGlobal0X128,
-            state.feeGrowthGlobal1X128,
-            state.liquidity
-        ) = poolManager.pools(PoolIdLibrary.toId(poolKey));
-
-        state.ticks = poolManager.pools(PoolIdLibrary.toId(poolKey)).ticks;
-
-        (uint160 sqrtPriceX96, , , , , ) = poolManager.getSlot0(
-            PoolIdLibrary.toId(poolKey)
-        );
-
-        (uint256 feeGrowthInside0X128, uint256 feeGrowthInside1X128) = state
-            .getFeeGrowthInside(lowerTick, upperTick);
-
-        (uint256 amount0, uint256 amount1) = LiquidityAmounts
-            .getAmountsForLiquidity(
-                sqrtPriceX96,
-                TickMath.getSqrtRatioAtTick(lowerTick),
-                TickMath.getSqrtRatioAtTick(upperTick),
-                liquidity
-            );
-
-        // compute current fees earned
-        uint256 fee0 = _computeFeesEarned(
-            feeGrowthInside0LastX128,
-            feeGrowthInside0X128,
-            liquidity
-        );
-        uint256 fee1 = _computeFeesEarned(
-            feeGrowthInside1LastX128,
-            feeGrowthInside1X128,
-            liquidity
-        );
-
-        // balance of ERC1155 token.
-        uint256 leftOver0 = poolManager.balanceOf(
-            address(this),
-            poolKey.currency0.toId()
-        );
-        uint256 leftOver1 = poolManager.balanceOf(
-            address(this),
-            poolKey.currency1.toId()
-        );
-
-        amount0Current = amount0 + fee0 + leftOver0;
-        amount1Current = amount1 + fee1 + leftOver1;
-    }
 
     function _getPrice(
         uint160 sqrtPriceX96_

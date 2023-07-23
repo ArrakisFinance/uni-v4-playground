@@ -72,9 +72,6 @@ interface IArrakisHookV1 {
     /// @dev ultimate threshold.
     function ultimateThreshold() external view returns (uint8);
 
-    /// @dev frequence at which rebalance will happen.
-    function rebalanceFrequence() external view returns (uint256);
-
     /// @dev percentage of tokens to put in action.
     function allocation() external view returns (uint8);
 
