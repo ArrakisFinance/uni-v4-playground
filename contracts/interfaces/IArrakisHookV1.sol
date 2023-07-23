@@ -1,31 +1,29 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity =0.8.19;
 
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IPoolManager} from "@uniswap/v4-core/contracts/interfaces/IPoolManager.sol";
+import {IHooks} from "@uniswap/v4-core/contracts/interfaces/IHooks.sol";
+import {Currency} from "@uniswap/v4-core/contracts/libraries/CurrencyLibrary.sol";
+
+// libraries/CurrencyLibrary.sol
 
 /// @dev Arrakis common vault
-interface IArrakisHookV1 is IERC20 {
-    //#region structs.
-
-    struct InitializeParams {
-        IPoolManager.PoolKey poolKey;
-        uint160 lastSqrtPriceX96;
-        uint8 referenceFee;
-        uint8 referenceVolatility;
-        uint24 rangeSize;
-        uint8 ultimateThreshold;
-        uint256 rebalanceFrequence;
-        uint8 allocation;
-    }
-
-    //#endregion structs.
-
+interface IArrakisHookV1 {
     //#region events.
 
-    event LogMint(address indexed receiver, uint256 mintAmount, uint256 amount0In, uint256 amount1In);
+    event LogMint(
+        address indexed receiver,
+        uint256 mintAmount,
+        uint256 amount0In,
+        uint256 amount1In
+    );
 
-    event LogBurn(address indexed receiver, uint256 burnAmount, uint256 amount0Out, uint256 amount1Out);
+    event LogBurn(
+        address indexed receiver,
+        uint256 burnAmount,
+        uint256 amount0Out,
+        uint256 amount1Out
+    );
 
     event LogCollectedFees(uint256 fee0, uint256 fee1);
 
@@ -33,20 +31,33 @@ interface IArrakisHookV1 is IERC20 {
 
     // #region state modifiying functions.
 
-    function initialize(InitializeParams memory initializeParams_) external;
+    function mint(
+        uint256 mintAmount_,
+        address receiver_
+    ) external returns (uint256 amount0, uint256 amount1);
 
-    function mint(uint256 mintAmount_, address receiver_) external returns (uint256 amount0, uint256 amount1);
-
-    function burn(uint256 burnAmount_, address receiver_) external returns (uint256 amount0, uint256 amount1);
+    function burn(
+        uint256 burnAmount_,
+        address receiver_
+    ) external returns (uint256 amount0, uint256 amount1);
 
     // #endregion state modifiying functions.
 
     // #region state reading functions.
 
-    function poolKey() external view returns (IPoolManager.PoolKey memory);
+    function poolKey()
+        external
+        view
+        returns (
+            Currency currency0,
+            Currency currency1,
+            uint24 fee,
+            int24 tickSpacing,
+            IHooks hooks
+        );
 
     /// @dev Al N delta constant.
-    function c() external view returns (uint256);
+    function c() external view returns (uint8);
 
     /// @dev base fee when volatility is average
     function referenceFee() external view returns (uint8);
@@ -56,7 +67,7 @@ interface IArrakisHookV1 is IERC20 {
     function referenceVolatility() external view returns (uint8);
 
     /// @dev middle range size.
-    function rangeSize() external view returns (int24);
+    function rangeSize() external view returns (uint24);
 
     /// @dev ultimate threshold.
     function ultimateThreshold() external view returns (uint8);
