@@ -28,7 +28,7 @@ contract ArrakisHookV1 is IArrakisHookV1, BaseHook, ERC20, ReentrancyGuard {
 
     //#region constants.
 
-    uint8 public immutable c;
+    uint16 public immutable c;
     uint8 public immutable referenceFee;
 
     //#endregion constants.
@@ -43,9 +43,8 @@ contract ArrakisHookV1 is IArrakisHookV1, BaseHook, ERC20, ReentrancyGuard {
     int24 public lowerTick;
     int24 public upperTick;
     uint8 public ultimateThreshold;
-    uint8 public allocation;
+    uint16 public allocation;
     uint256 public lastBlockNumber;
-    uint256 public currentBlockNumber;
 
     uint8 public delta;
     bool public impactDirection;
@@ -55,28 +54,6 @@ contract ArrakisHookV1 is IArrakisHookV1, BaseHook, ERC20, ReentrancyGuard {
     uint256 public a1;
 
     //#endregion properties.
-
-    struct InitializeParams {
-        PoolManager poolManager;
-        string name;
-        string symbol;
-        uint24 rangeSize;
-        int24 lowerTick;
-        int24 upperTick;
-        uint8 referenceFee;
-        uint8 referenceVolatility; // not use for now
-        uint8 ultimateThreshold;
-        uint8 allocation;
-        uint8 c;
-    }
-
-    struct PoolManagerCallData {
-        uint8 actionType; // 0 for mint, 1 for burn.
-        uint256 mintAmount;
-        uint256 burnAmount;
-        address receiver;
-        address msgSender;
-    }
 
     constructor(
         InitializeParams memory params_
@@ -100,7 +77,7 @@ contract ArrakisHookV1 is IArrakisHookV1, BaseHook, ERC20, ReentrancyGuard {
     ) external override returns (bytes4) {
         poolKey = poolKey_;
         lastSqrtPriceX96 = sqrtPriceX96_;
-        lastBlockNumber = currentBlockNumber = block.number;
+        lastBlockNumber = block.number;
         return this.beforeInitialize.selector;
     }
 

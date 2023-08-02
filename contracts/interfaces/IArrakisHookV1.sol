@@ -9,6 +9,31 @@ import {Currency} from "@uniswap/v4-core/contracts/libraries/CurrencyLibrary.sol
 
 /// @dev Arrakis common vault
 interface IArrakisHookV1 {
+    //#region structs.
+
+    struct InitializeParams {
+        IPoolManager poolManager;
+        string name;
+        string symbol;
+        uint24 rangeSize;
+        int24 lowerTick;
+        int24 upperTick;
+        uint8 referenceFee;
+        uint8 referenceVolatility; // not use for now
+        uint8 ultimateThreshold;
+        uint16 allocation;
+        uint16 c;
+    }
+
+    struct PoolManagerCallData {
+        uint8 actionType; // 0 for mint, 1 for burn.
+        uint256 mintAmount;
+        uint256 burnAmount;
+        address receiver;
+        address msgSender;
+    }
+
+    //#endregion structs.
     //#region events.
 
     event LogMint(
@@ -57,7 +82,7 @@ interface IArrakisHookV1 {
         );
 
     /// @dev Al N delta constant.
-    function c() external view returns (uint8);
+    function c() external view returns (uint16);
 
     /// @dev base fee when volatility is average
     function referenceFee() external view returns (uint8);
@@ -73,7 +98,7 @@ interface IArrakisHookV1 {
     function ultimateThreshold() external view returns (uint8);
 
     /// @dev percentage of tokens to put in action.
-    function allocation() external view returns (uint8);
+    function allocation() external view returns (uint16);
 
     // #endregion state reading functions.
 
