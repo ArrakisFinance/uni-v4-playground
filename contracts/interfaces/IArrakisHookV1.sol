@@ -18,9 +18,9 @@ interface IArrakisHookV1 {
         uint24 rangeSize;
         int24 lowerTick;
         int24 upperTick;
-        uint8 referenceFee;
-        uint8 referenceVolatility; // not use for now
-        uint8 ultimateThreshold;
+        uint16 referenceFee;
+        uint16 referenceVolatility; // not use for now
+        uint16 ultimateThreshold;
         uint16 allocation;
         uint16 c;
     }
@@ -85,17 +85,17 @@ interface IArrakisHookV1 {
     function c() external view returns (uint16);
 
     /// @dev base fee when volatility is average
-    function referenceFee() external view returns (uint8);
+    function referenceFee() external view returns (uint16);
 
     /// @dev base volatility, above that level we will proportionally increase referenceFee
     /// below we will proportionally decrease the referenceFee.
-    function referenceVolatility() external view returns (uint8);
+    function referenceVolatility() external view returns (uint16);
 
     /// @dev middle range size.
     function rangeSize() external view returns (uint24);
 
     /// @dev ultimate threshold.
-    function ultimateThreshold() external view returns (uint8);
+    function ultimateThreshold() external view returns (uint16);
 
     /// @dev percentage of tokens to put in action.
     function allocation() external view returns (uint16);

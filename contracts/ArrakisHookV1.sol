@@ -18,6 +18,8 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {IArrakisHookV1} from "./interfaces/IArrakisHookV1.sol";
 import {LiquidityAmounts} from "./libraries/LiquidityAmounts.sol";
 
+import "forge-std/console.sol";
+
 /// @dev Al N spread V1
 contract ArrakisHookV1 is IArrakisHookV1, BaseHook, ERC20, ReentrancyGuard {
     using CurrencyLibrary for Currency;
@@ -29,7 +31,7 @@ contract ArrakisHookV1 is IArrakisHookV1, BaseHook, ERC20, ReentrancyGuard {
     //#region constants.
 
     uint16 public immutable c;
-    uint8 public immutable referenceFee;
+    uint16 public immutable referenceFee;
 
     //#endregion constants.
 
@@ -38,15 +40,15 @@ contract ArrakisHookV1 is IArrakisHookV1, BaseHook, ERC20, ReentrancyGuard {
     /// @dev should not be settable.
     PoolManager.PoolKey public override poolKey;
     uint160 public lastSqrtPriceX96;
-    uint8 public referenceVolatility;
+    uint16 public referenceVolatility;
     uint24 public rangeSize;
     int24 public lowerTick;
     int24 public upperTick;
-    uint8 public ultimateThreshold;
+    uint16 public ultimateThreshold;
     uint16 public allocation;
     uint256 public lastBlockNumber;
 
-    uint8 public delta;
+    uint16 public delta;
     bool public impactDirection;
 
     bool public zeroForOne; // transient.
@@ -102,12 +104,14 @@ contract ArrakisHookV1 is IArrakisHookV1, BaseHook, ERC20, ReentrancyGuard {
             uint256 price = _getPrice(sqrtPriceX96);
             uint256 lastPrice = _getPrice(lastSqrtPriceX96);
 
-            delta = SafeCast.toUint8(
+            delta = SafeCast.toUint16(
                 FullMath.mulDiv(
                     c,
-                    price > lastPrice
-                        ? price - lastPrice
-                        : lastPrice - price * 1_000_000,
+                    (
+                        price > lastPrice
+                            ? price - lastPrice
+                            : lastPrice - price
+                    ) * 1_000_000,
                     lastSqrtPriceX96 * 10_000
                 )
             );
@@ -215,16 +219,16 @@ contract ArrakisHookV1 is IArrakisHookV1, BaseHook, ERC20, ReentrancyGuard {
                 index,
                 poolKey.currency0
             );
-            if (currency0BalanceRaw > 0) {
-                revert("cannot delta currency0 positive");
+            if (currency0BalanceRaw < 0) {
+                revert("cannot delta currency0 negative");
             }
             uint256 currency0Balance = SafeCast.toUint256(currency0BalanceRaw);
             int256 currency1BalanceRaw = poolManager.getCurrencyDelta(
                 index,
                 poolKey.currency1
             );
-            if (currency1BalanceRaw > 0) {
-                revert("cannot delta currency1 positive");
+            if (currency1BalanceRaw < 0) {
+                revert("cannot delta currency1 negative");
             }
             uint256 currency1Balance = SafeCast.toUint256(currency1BalanceRaw);
 
@@ -472,18 +476,18 @@ contract ArrakisHookV1 is IArrakisHookV1, BaseHook, ERC20, ReentrancyGuard {
                 index,
                 poolKey.currency0
             );
-            if (currency0BalanceRaw < 0) {
-                revert("cannot delta currency0 negative");
+            if (currency0BalanceRaw > 0) {
+                revert("cannot delta currency0 positive");
             }
-            uint256 currency0Balance = SafeCast.toUint256(currency0BalanceRaw);
+            uint256 currency0Balance = SafeCast.toUint256(- currency0BalanceRaw);
             int256 currency1BalanceRaw = poolManager.getCurrencyDelta(
                 index,
                 poolKey.currency1
             );
-            if (currency1BalanceRaw < 0) {
-                revert("cannot delta currency1 negative");
+            if (currency1BalanceRaw > 0) {
+                revert("cannot delta currency1 positive");
             }
-            uint256 currency1Balance = SafeCast.toUint256(currency1BalanceRaw);
+            uint256 currency1Balance = SafeCast.toUint256(- currency1BalanceRaw);
 
             {
                 uint256 amount0 = FullMath.mulDiv(
@@ -596,7 +600,9 @@ contract ArrakisHookV1 is IArrakisHookV1, BaseHook, ERC20, ReentrancyGuard {
         }
     }
 
-    function getFee(PoolManager.PoolKey calldata) external view returns (uint24) {
+    function getFee(
+        PoolManager.PoolKey calldata
+    ) external view returns (uint24) {
         return
             impactDirection != zeroForOne
                 ? referenceFee + delta
